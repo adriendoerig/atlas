@@ -17,6 +17,18 @@
 		</header>
 		<main>
 			<section class="workspace">
+                <details id="poolManager" class="pool-manager">
+                    <summary>Sample pools · <span id="poolSummary">Loading…</span></summary>
+                    <div id="poolList"></div>
+                    <button id="newPool">+ New Pool</button>
+                    <form id="poolForm" hidden>
+                        <label>Name <input id="poolName" required maxlength="120" placeholder="Jungle drums"></label>
+                        <label>Folder path <input id="poolFolder" required placeholder="/Users/you/Music/Samples"></label>
+                        <button type="submit">Create and scan</button>
+                        <button type="button" id="cancelPool">Cancel</button>
+                    </form>
+                    <span id="poolProgress" role="status"></span>
+                </details>
 				<div class="toolbar">
 					<div class="space-control">
 						<span class="eyebrow">SIMILARITY SPACE</span>

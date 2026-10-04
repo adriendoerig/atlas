@@ -131,3 +131,14 @@ body.live-view #error{
     padding:7px 9px;
     font-size:10px;
 }
+
+.pool-manager {padding:12px 18px;border-bottom:1px solid #304149;background:#152128;}
+.pool-manager summary {cursor:pointer;color:#b8d5d2;}
+#poolList {display:flex;flex-wrap:wrap;gap:10px;margin:12px 0;}
+.pool-row {display:flex;align-items:center;gap:8px;border:1px solid #304149;padding:6px;border-radius:6px;}
+.pool-row button {font-size:11px;padding:4px 7px;}
+#poolForm {margin-top:10px;}
+#poolForm label {display:inline-flex;gap:6px;align-items:center;margin:4px;}
+#poolFolder {min-width:280px;}
+#poolProgress {margin-left:10px;color:#b8d5d2;}
+.live-view .pool-manager {display:none;}

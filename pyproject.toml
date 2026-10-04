@@ -7,7 +7,7 @@ name = "drum-atlas"
 version = "0.1.0"
 description = "Local XO-like sample-space experiment"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.26,<3", "scipy>=1.11,<2", "soundfile>=0.12,<1", "librosa>=0.10,<1", "umap-learn>=0.5.7,<0.6", "fastapi>=0.110,<1", "uvicorn>=0.29,<1", "transformers>=4.45,<5", "torch>=2.6,<3"]
+dependencies = ["numpy>=1.26,<3", "scipy>=1.11,<2", "soundfile>=0.12,<1", "librosa>=0.10,<1", "umap-learn>=0.5.7,<0.6", "fastapi>=0.110,<1", "uvicorn>=0.29,<1", "websockets>=13,<18", "transformers>=4.45,<5", "torch>=2.6,<3"]
 [project.optional-dependencies]
 test = ["pytest", "httpx"]
 [project.scripts]

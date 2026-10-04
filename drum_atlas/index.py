@@ -7,71 +7,80 @@ from .analysis import analyze, ANALYSIS_VERSION, ClapEmbedder
 from .store import connect
 
 EXTENSIONS={'.wav','.wave','.aif','.aiff','.flac','.ogg','.mp3'}
-def scan(db_path,roots,*,clap=True,one_shot=.35,drum=.5,cache_dir=None,progress=print):
+def scan(db_path,roots,*,clap=True,one_shot=.35,drum=.5,cache_dir=None,progress=print,pool_id=None):
     roots=[Path(p).expanduser().resolve() for p in roots]
     if not roots or any(not p.is_dir() for p in roots):
         raise ValueError('Provide existing root directories; no index changes were made.')
     db=connect(db_path)
-    found=set()
-    # Fail enumeration before deactivating anything if a directory is unreadable.
-    def onerror(e): raise e
-    for root in roots:
-        for folder, dirs, files in os.walk(root,followlinks=False,onerror=onerror):
-            dirs.sort()
-            for name in sorted(files):
-                p=Path(folder,name)
-                if p.suffix.lower() in EXTENSIONS and not p.is_symlink(): found.add(str(p.resolve()))
-    stats={'found':len(found),'analyzed':0,'cached':0,'embedded':0,'errors':0}
-    engine=None
-    for i,path in enumerate(sorted(found)):
-        progress(f'[{i+1}/{len(found)}] {Path(path).name}',flush=True)
-        st=Path(path).stat()
-        old=db.execute('SELECT * FROM samples WHERE path=?',(path,)).fetchone()
-        fresh=old and old['mtime_ns']==st.st_mtime_ns and old['size']==st.st_size and old['analysis_version']==ANALYSIS_VERSION and not old['error']
-        if not fresh:
-            try:
-                a=analyze(path)
-                db.execute('''INSERT INTO samples(path,mtime_ns,size,analysis_version,duration,sample_rate,channels,
-                    one_shot,drum_heuristic,features,detail) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(path) DO UPDATE SET mtime_ns=excluded.mtime_ns,size=excluded.size,
-                    analysis_version=excluded.analysis_version,duration=excluded.duration,sample_rate=excluded.sample_rate,
-                    channels=excluded.channels,one_shot=excluded.one_shot,drum_heuristic=excluded.drum_heuristic,
-                    features=excluded.features,detail=excluded.detail,clap=NULL,clap_version=NULL,drum_clap=NULL,
-                    clap_detail=NULL,error=NULL,active=1''',
-                    (path,st.st_mtime_ns,st.st_size,ANALYSIS_VERSION,a['duration'],a['sample_rate'],a['channels'],
-                     a['one_shot'],a['drum_heuristic'],json.dumps(a['features']),json.dumps(a['detail'])))
-                stats['analyzed']+=1
-            except Exception as e:
-                db.execute('''INSERT INTO samples(path,mtime_ns,size,error) VALUES(?,?,?,?)
-                  ON CONFLICT(path) DO UPDATE SET error=excluded.error,clap=NULL,features=NULL,active=1''',
-                  (path,st.st_mtime_ns,st.st_size,str(e)))
-                stats['errors']+=1
-                db.commit()
-                continue
-        else:
-            stats['cached']+=1
-            db.execute('UPDATE samples SET active=1 WHERE path=?',(path,))
-        db.commit()
-        row=db.execute('SELECT * FROM samples WHERE path=?',(path,)).fetchone()
-        if clap and row['one_shot']>=one_shot and (row['clap'] is None or row['clap_version']!=ClapEmbedder.VERSION):
-            # Model failures are fatal and explicit: never silently substitute baseline for CLAP.
-            if engine is None:
-                progress('Loading CLAP (first run downloads model weights)...',flush=True)
-                engine=ClapEmbedder(cache_dir)
-            v,score,detail=engine.embed(path)
-            db.execute('UPDATE samples SET clap=?,clap_version=?,drum_clap=?,clap_detail=? WHERE id=?',
-                       (v.astype('<f4').tobytes(),ClapEmbedder.VERSION,score,json.dumps(detail),row['id']))
-            stats['embedded']+=1
+    try:
+        found=set()
+        # Fail enumeration before deactivating anything if a directory is unreadable.
+        def onerror(e): raise e
+        for root in roots:
+            for folder, dirs, files in os.walk(root,followlinks=False,onerror=onerror):
+                dirs.sort()
+                for name in sorted(files):
+                    p=Path(folder,name)
+                    if p.suffix.lower() in EXTENSIONS and not p.is_symlink(): found.add(str(p.resolve()))
+        if pool_id is not None and not db.execute('SELECT 1 FROM pools WHERE id=?',(pool_id,)).fetchone():
+            raise ValueError('Unknown pool')
+        stats={'found':len(found),'analyzed':0,'cached':0,'embedded':0,'errors':0}
+        engine=None
+        for i,path in enumerate(sorted(found)):
+            progress(f'[{i+1}/{len(found)}] {Path(path).name}',flush=True)
+            st=Path(path).stat()
+            old=db.execute('SELECT * FROM samples WHERE path=?',(path,)).fetchone()
+            fresh=old and old['mtime_ns']==st.st_mtime_ns and old['size']==st.st_size and old['analysis_version']==ANALYSIS_VERSION and not old['error']
+            if not fresh:
+                try:
+                    a=analyze(path)
+                    db.execute('''INSERT INTO samples(path,mtime_ns,size,analysis_version,duration,sample_rate,channels,
+                        one_shot,drum_heuristic,features,detail) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(path) DO UPDATE SET mtime_ns=excluded.mtime_ns,size=excluded.size,
+                        analysis_version=excluded.analysis_version,duration=excluded.duration,sample_rate=excluded.sample_rate,
+                        channels=excluded.channels,one_shot=excluded.one_shot,drum_heuristic=excluded.drum_heuristic,
+                        features=excluded.features,detail=excluded.detail,clap=NULL,clap_version=NULL,drum_clap=NULL,
+                        clap_detail=NULL,error=NULL,active=1''',
+                        (path,st.st_mtime_ns,st.st_size,ANALYSIS_VERSION,a['duration'],a['sample_rate'],a['channels'],
+                         a['one_shot'],a['drum_heuristic'],json.dumps(a['features']),json.dumps(a['detail'])))
+                    stats['analyzed']+=1
+                except Exception as e:
+                    db.execute('''INSERT INTO samples(path,mtime_ns,size,error) VALUES(?,?,?,?)
+                      ON CONFLICT(path) DO UPDATE SET error=excluded.error,clap=NULL,features=NULL,active=1''',
+                      (path,st.st_mtime_ns,st.st_size,str(e)))
+                    stats['errors']+=1
+                    db.commit()
+                    continue
+            else:
+                stats['cached']+=1
+                db.execute('UPDATE samples SET active=1 WHERE path=?',(path,))
             db.commit()
-    for row in db.execute('SELECT id,path FROM samples WHERE active=1').fetchall():
-        p=Path(row['path'])
-        if any(p.is_relative_to(root) for root in roots) and str(p) not in found:
-            db.execute('UPDATE samples SET active=0 WHERE id=?',(row['id'],))
-    db.commit()
-    build_spaces(db,clap=clap,one_shot=one_shot,drum=drum)
-    stats['accepted']=db.execute("SELECT count(*) FROM points WHERE space='timbral'").fetchone()[0]
-    db.close()
-    return stats
+            row=db.execute('SELECT * FROM samples WHERE path=?',(path,)).fetchone()
+            if clap and row['one_shot']>=one_shot and (row['clap'] is None or row['clap_version']!=ClapEmbedder.VERSION):
+                # Model failures are fatal and explicit: never silently substitute baseline for CLAP.
+                if engine is None:
+                    progress('Loading CLAP (first run downloads model weights)...',flush=True)
+                    engine=ClapEmbedder(cache_dir)
+                v,score,detail=engine.embed(path)
+                db.execute('UPDATE samples SET clap=?,clap_version=?,drum_clap=?,clap_detail=? WHERE id=?',
+                           (v.astype('<f4').tobytes(),ClapEmbedder.VERSION,score,json.dumps(detail),row['id']))
+                stats['embedded']+=1
+                db.commit()
+        for row in db.execute('SELECT id,path FROM samples WHERE active=1').fetchall():
+            p=Path(row['path'])
+            if any(p.is_relative_to(root) for root in roots) and str(p) not in found:
+                db.execute('UPDATE samples SET active=0 WHERE id=?',(row['id'],))
+        db.commit()
+        build_spaces(db,clap=clap,one_shot=one_shot,drum=drum)
+        stats['accepted']=db.execute("SELECT count(*) FROM points WHERE space='timbral'").fetchone()[0]
+        if pool_id is not None:
+            with db:
+                db.execute('DELETE FROM pool_samples WHERE pool_id=?',(pool_id,))
+                db.executemany('INSERT INTO pool_samples(pool_id,sample_id) SELECT ?,id FROM samples WHERE path=?',
+                               [(pool_id,path) for path in sorted(found)])
+        return stats
+    finally:
+        db.close()
 
 def build_spaces(db,*,clap,one_shot,drum):
     rows=db.execute('SELECT * FROM samples WHERE active=1 AND error IS NULL AND features IS NOT NULL ORDER BY id').fetchall()

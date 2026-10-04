@@ -1,3 +1,9 @@
+import asyncio
+import sqlite3
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
+from . import pools
+from .paths import database_path
 import io
 import json
 from pathlib import Path
@@ -15,7 +21,16 @@ from .index import neighbors
 STATIC = Path(__file__).parent / 'static'
 
 
-def create_app(db_path):
+class PoolCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    kind: str = 'folder'
+    roots: list[str] = Field(default_factory=list)
+
+class PoolSelection(BaseModel):
+    ids: list[int]
+
+def create_app(db_path=None):
+    db_path = db_path or database_path()
     app = FastAPI(title='Drum Atlas')
     app.add_middleware(
         TrustedHostMiddleware,
@@ -26,6 +41,12 @@ def create_app(db_path):
     # Lightweight in-memory relay between the full browser UI and the
     # ?view=live jweb~ UI. Nothing is persisted to disk.
     sync_clients = {}
+    mutation_lock = asyncio.Lock()
+
+    def pool_state():
+        db = connect(db_path)
+        try: return pools.state(db)
+        finally: db.close()
     sync_state = {
         'selected': None,
         'mode': None,
@@ -71,6 +92,7 @@ def create_app(db_path):
         # Give a newly opened/reconnected view the current shared state.
         await websocket.send_json({
             'type': 'state',
+            'pool_state': pool_state(),
             'selected': sync_state['selected'],
             'mode': sync_state['mode'],
             'scrub_sync': sync_state['scrub_sync'],
@@ -153,6 +175,82 @@ def create_app(db_path):
 
             await send_presence()
 
+    async def notify_pools(library_changed=False):
+        result = pool_state()
+        if sync_state['selected'] is not None and sync_state['selected'] not in result['sample_ids']:
+            sync_state['selected'] = None
+            sync_state['scrub_active'] = False
+            await relay({'type':'scrub', 'active':False})
+        await relay({'type':'pools', 'pool_state':result, 'library_changed':library_changed})
+        return result
+
+    @app.get('/api/pools')
+    def get_pools():
+        return pool_state()
+
+    @app.put('/api/pools/active')
+    async def set_pools(body: PoolSelection):
+        async with mutation_lock:
+            db = connect(db_path)
+            try: pools.select(db, body.ids)
+            except ValueError as e: raise HTTPException(400,str(e))
+            finally: db.close()
+            return await notify_pools()
+
+    @app.post('/api/pools', status_code=201)
+    async def create_pool(body: PoolCreate):
+        async with mutation_lock:
+            db = connect(db_path)
+            try: pid = pools.create(db,body.name,body.kind,body.roots)
+            except (ValueError,sqlite3.IntegrityError) as e: raise HTTPException(400,str(e))
+            finally: db.close()
+            # The empty pool is saved first so failed scans can be retried.
+            try:
+                if body.kind == 'folder': await run_in_threadpool(pools.rescan,db_path,pid)
+            except Exception as e:
+                await notify_pools(True)
+                raise HTTPException(422,f'Pool {pid} saved; scan failed, retry Rescan: {e}')
+            db = connect(db_path)
+            try: pools.select(db,pools.state(db)['active_pool_ids']+[pid])
+            finally: db.close()
+            return {'id':pid, **await notify_pools(True)}
+
+    @app.post('/api/pools/{pid}/rescan')
+    async def rescan_pool(pid: int):
+        async with mutation_lock:
+            try: stats = await run_in_threadpool(pools.rescan,db_path,pid)
+            except Exception as e:
+                await notify_pools(True)
+                raise HTTPException(422,str(e))
+            return {'stats':stats, **await notify_pools(True)}
+
+    @app.delete('/api/pools/{pid}')
+    async def delete_pool(pid: int):
+        async with mutation_lock:
+            db = connect(db_path)
+            try:
+                with db:
+                    if not db.execute('DELETE FROM pools WHERE id=?',(pid,)).rowcount:
+                        raise HTTPException(404,'Pool not found')
+                    pools.select(db,[i for i in pools.state(db)['active_pool_ids'] if i != pid])
+            finally: db.close()
+            return await notify_pools()
+
+    @app.put('/api/pools/{pid}/members')
+    async def curate_pool(pid: int, body: PoolSelection):
+        async with mutation_lock:
+            db = connect(db_path)
+            try:
+                row = db.execute('SELECT kind FROM pools WHERE id=?',(pid,)).fetchone()
+                if row is None: raise HTTPException(404,'Pool not found')
+                if row[0] != 'manual': raise HTTPException(400,'Only manual pools can be curated')
+                with db:
+                    db.execute('DELETE FROM pool_samples WHERE pool_id=?',(pid,))
+                    db.executemany('INSERT INTO pool_samples VALUES(?,?)',[(pid,i) for i in set(body.ids)])
+            except sqlite3.IntegrityError: raise HTTPException(400,'Unknown sample')
+            finally: db.close()
+            return await notify_pools()
+
     @app.get('/')
     def home():
         return FileResponse(STATIC / 'index.html')
@@ -193,7 +291,7 @@ def create_app(db_path):
                         },
                     }
                 )
-            return {'spaces': spaces, 'samples': samples}
+            return {'spaces': spaces, 'samples': samples, 'pool_state': pools.state(db)}
         finally:
             db.close()
 
@@ -204,7 +302,8 @@ def create_app(db_path):
             if space not in ('clap', 'timbral'):
                 raise HTTPException(400, 'Unknown space')
             try:
-                return neighbors(db, space, sample_id, k)
+                allowed = set(pools.state(db)['sample_ids'])
+                return [n for n in neighbors(db, space, sample_id, 1000000) if n['id'] in allowed][:k]
             except KeyError:
                 raise HTTPException(404, 'Sample is not in this map')
         finally:

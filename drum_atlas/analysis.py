@@ -1,4 +1,7 @@
 from pathlib import Path
+import os
+from .paths import cache_dir as app_cache_dir
+os.environ.setdefault("NUMBA_CACHE_DIR", str(app_cache_dir() / "numba"))
 import numpy as np
 import soundfile as sf
 from scipy.signal import find_peaks, resample_poly
@@ -82,6 +85,7 @@ class ClapEmbedder:
                 'The sound of a piano note.', 'The sound of a sustained synthesizer or bass note.',
                 'The sound of ambient nature or traffic.', 'The sound of a string or wind instrument.']
     def __init__(self, cache_dir):
+        cache_dir = cache_dir or str(app_cache_dir() / "models")
         import torch
         from transformers import ClapModel, ClapProcessor
         self.torch = torch

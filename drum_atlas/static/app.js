@@ -11,6 +11,8 @@ const ctx = canvas.getContext('2d');
 let data = { samples: [], spaces: {} };
 let byId = new Map();
 let mode = 'clap';
+let poolState = {pools: [], active_pool_ids: [], sample_ids: []};
+let poolMembers = new Set();
 let selected = null;
 let visible = [];
 let neighborIds = [];
@@ -152,7 +154,14 @@ function applySyncMessage(message) {
         return;
     }
 
+    if (message.type === 'pools') {
+        if (message.library_changed) { load(); }
+        else { applyPoolState(message.pool_state); }
+        return;
+    }
+
     if (message.type === 'state') {
+        if (message.pool_state) applyPoolState(message.pool_state);
         if (message.mode === 'clap' || message.mode === 'timbral') {
             setMode(message.mode, true);
         }
@@ -515,6 +524,7 @@ async function play(
     id,
     sequence = false
 ) {
+    if (!poolMembers.has(id)) return 0;
     if (!sequence) {
         clearScrub();
         ++sequenceVersion;
@@ -658,6 +668,7 @@ async function select(
         clearScrub();
     }
 
+    if (!poolMembers.has(id)) return;
     selected =
         id;
 
@@ -872,7 +883,7 @@ function filtered() {
 
     return data.samples.filter(
         (s) =>
-            s.path
+            poolMembers.has(s.id) && s.path
                 .toLowerCase()
                 .includes(q)
     );
@@ -1609,6 +1620,8 @@ async function load() {
             true
         );
 
+        applyPoolState(data.pool_state);
+
         libraryReady =
             true;
 
@@ -1621,6 +1634,96 @@ async function load() {
         error(e);
     }
 }
+
+function applyPoolState(next) {
+    if (!next) return;
+    poolState = next;
+    poolMembers = new Set(next.sample_ids);
+    if (selected !== null && !poolMembers.has(selected)) {
+        stop();
+        selected = null;
+        ++selectionVersion;
+        neighborIds = [];
+        $('sequence').disabled = true;
+        $('wave').getContext('2d').clearRect(0,0,$('wave').width,$('wave').height);
+        $('name').textContent = 'Find your next hit.';
+        $('path').textContent = 'Choose a sample in the active pools.';
+        $('neighbors').replaceChildren();
+        $('scores').replaceChildren();
+        $('liveSelected').textContent = '';
+    }
+    $('poolSummary').textContent = `${next.active_pool_ids.length} active · ${next.sample_ids.length} samples`;
+    $('poolList').replaceChildren();
+    for (const pool of next.pools) {
+        const row = document.createElement('div');
+        row.className = 'pool-row';
+        const label = document.createElement('label');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = next.active_pool_ids.includes(pool.id);
+        checkbox.onchange = () => poolAction(async () => {
+            const ids = new Set(poolState.active_pool_ids);
+            if (checkbox.checked) ids.add(pool.id); else ids.delete(pool.id);
+            applyPoolState(await poolRequest('/api/pools/active','PUT',{ids:[...ids]}));
+        });
+        label.append(checkbox, document.createTextNode(` ${pool.name} (${pool.count})`));
+        row.append(label);
+        if (pool.kind === 'folder') {
+            const rescan = document.createElement('button');
+            rescan.textContent = 'Rescan';
+            rescan.onclick = () => poolAction(async () => {
+                await poolRequest(`/api/pools/${pool.id}/rescan`,'POST');
+                await load();
+            });
+            row.append(rescan);
+        }
+        const remove = document.createElement('button');
+        remove.textContent = 'Delete';
+        remove.title = 'Delete pool; samples and analysis stay in the global library';
+        remove.onclick = () => {
+            if (confirm(`Delete pool “${pool.name}”? The samples and analysis will be kept.`))
+                poolAction(async () => applyPoolState(await poolRequest(`/api/pools/${pool.id}`,'DELETE')));
+        };
+        row.append(remove);
+        $('poolList').append(row);
+    }
+    draw();
+    list();
+    if (selected !== null) select(selected, false, false, true);
+    if (poolBusy) $('poolManager').querySelectorAll('button,input').forEach(el => el.disabled = true);
+}
+
+async function poolRequest(url, method, body) {
+    const response = await fetch(url, {method, headers:{'Content-Type':'application/json'},
+        ...(body ? {body:JSON.stringify(body)} : {})});
+    const result = await response.json();
+    if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : JSON.stringify(result.detail));
+    return result;
+}
+let poolBusy = false;
+async function poolAction(action) {
+    if (poolBusy) return;
+    poolBusy = true;
+    $('poolProgress').textContent = 'Working… Analysis may take a few minutes.';
+    $('poolManager').querySelectorAll('button,input').forEach(el => el.disabled = true);
+    try { await action(); $('poolProgress').textContent = 'Ready'; }
+    catch (e) { $('poolProgress').textContent = e.message; }
+    finally {
+        poolBusy = false;
+        $('poolManager').querySelectorAll('button,input').forEach(el => el.disabled = false);
+    }
+}
+$('newPool').onclick = () => { $('poolForm').hidden = false; $('poolName').focus(); };
+$('cancelPool').onclick = () => { $('poolForm').hidden = true; };
+$('poolForm').onsubmit = event => {
+    event.preventDefault();
+    poolAction(async () => {
+        await poolRequest('/api/pools','POST',{name:$('poolName').value,kind:'folder',roots:[$('poolFolder').value]});
+        $('poolForm').hidden = true;
+        $('poolForm').reset();
+        await load();
+    });
+};
 
 $('clap').onclick =
     () =>

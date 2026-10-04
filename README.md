@@ -1,32 +1,99 @@
 # Drum Atlas — V0
 
-A local Python sample browser for testing whether nearby samples sound meaningfully similar. No Max for Live layer yet.
+A local sample browser with a compact Max for Live web view, synchronized audition controls, and reusable sample pools.
 
 ## Run
 
-Requires Python 3.10 or newer (tested with Python 3.12 on Apple Silicon).
+On this Mac, the permanent project is `/Users/adriendoerig/Documents/DrumAtlas`.
+Double-click `Launch.command` there, or run:
 
 ```sh
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e '.[test]'
-drum-atlas scan '/path/to/samples' '/another/sample/root'
-drum-atlas serve
+cd /Users/adriendoerig/Documents/DrumAtlas
+.venv/bin/drum-atlas serve
 ```
 
-Open http://127.0.0.1:8765. The first scan downloads `laion/clap-htsat-unfused` into `data/models`; subsequent inference runs locally. The model revision is pinned in the source for repeatability. Audio is never uploaded. A baseline-only scan requires no model download:
+Open http://127.0.0.1:8765. In Max, keep the existing URL
+`http://127.0.0.1:8765/?view=live`. Reload the web view after updating the server.
+Only one server can occupy port 8765. Stop it with Ctrl-C in its launching terminal
+before starting another copy. The launcher uses only the project-local `.venv`.
+
+Persistent locations on macOS:
+
+- Database, pool definitions, active pool selection: `~/Library/Application Support/Drum Atlas/library.sqlite`.
+- Model weights and compiled analysis cache: `~/Library/Caches/Drum Atlas/`.
+- Original sample audio stays in its existing folders; nothing copies or moves that audio.
+
+`drum_atlas/paths.py` defines these defaults. Set `DRUM_ATLAS_DATA_DIR` or
+`DRUM_ATLAS_CACHE_DIR` to override the directories. `--db` remains available before
+any command; `scan --model-cache` overrides the model cache independently:
 
 ```sh
-drum-atlas scan '/path/to/samples' --baseline-only
+.venv/bin/drum-atlas --db /path/to/library.sqlite serve --port 8767
 ```
 
-Database option precedes the command:
+The local environment has its own installed dependencies and no dependency on the
+old Work virtualenv. Like a normal Python virtualenv, it still uses the Python
+3.12 installation with which it was created. It is a development environment, not
+a redistributable runtime. To recreate it with your own Python 3.12 installation:
 
 ```sh
-drum-atlas --db data/pml-test.sqlite serve
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements-tested.txt
+.venv/bin/python -m pip install '.[test]'
 ```
 
-The supplied PML test database references original files on this computer. It contains no audio. Run the launch script on this machine or set up a fresh environment elsewhere.
+After editing Python source, reinstall it with `.venv/bin/python -m pip install --no-deps --no-build-isolation .`.
+The project uses a regular install so console launches do not depend on editable-install discovery.
+
+The existing pinned CLAP model cache was copied. A fresh installation downloads
+`laion/clap-htsat-unfused` on its first normal scan; inference then runs locally.
+Audio is never uploaded.
+
+## Sample pools
+
+Expand **Sample pools** in the full browser. Check any combination of pools to
+show their distinct union. Unchecking every pool gives an empty view. A sample
+that belongs to two checked pools appears once. Counts include rejected and
+unembedded files; the map shows the accepted subset.
+
+Use **+ New Pool**, enter a name and an absolute folder path, then **Create and
+scan**. The folder is scanned recursively. **Rescan** updates its membership and
+analyses only changed, outdated, or new files. Known eligible CLAP embeddings are
+reused. **Delete** removes the pool references, retaining global analysis and
+original audio. If a scan fails, the saved pool remains available for retry.
+
+The original 383 samples were migrated into **Polaroit**. Your **Artist kicks**
+pool (449 samples) is also preserved. The library now contains 832 samples,
+588 of which pass the current mapping filters.
+
+Pool selection is persisted and synchronized to all browser/Live views. Pool
+management is hidden in the tiny Live layout. Both projections remain global:
+selection only hides points, keeping the same coordinates, scale, and global
+feature normalization. Scanning genuinely new/changed content can rebuild the
+global map. Nearest-neighbor results use full-dimensional vectors and are limited
+to the active union.
+
+The schema supports both folder and manual pools. Manual curation currently uses
+the API (see `ARCHITECTURE.md`); the browser creation form makes folder pools.
+
+CLI scanning creates or reuses a named folder pool, activates it, and scans it:
+
+```sh
+.venv/bin/drum-atlas scan '/path/to/samples' --pool 'My drums'
+.venv/bin/drum-atlas scan '/path/to/samples' --pool 'My drums' --baseline-only
+```
+
+An existing name must have the same roots. Use a new name for different roots.
+Pool mutations from the web UI are serialized. Run CLI scans when no web scan is
+running; click **Refresh index** in connected views after a CLI scan.
+
+## Max for Live
+
+No patch wiring changes are required. Sample `selected` messages, browser/Live
+WebSocket selection and mode relay, Open Browser, adaptive dot sizing, and the
+Live-safe wheel handling remain in place. The existing `scrub_sync` and `scrub`
+messages still drive the Max-side 1/16 clock; Live transport must be running.
+Backend auto-start from the device and distribution are deferred (see `TODO.md`).
 
 ## Browser
 
