@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width,initial-scale=1">
+		<title>Drum Atlas</title>
+		<link rel="stylesheet" href="/static/style.css">
+	</head>
+	<body>
+		<header>
+			<div class="brand">
+				<span class="mark">◌</span>
+				<div>DRUM ATLAS <small>LOCAL SAMPLE EXPLORER / V0</small></div>
+			</div>
+			<div id="status">Opening library…</div>
+			<button id="refresh">Refresh index ↻</button>
+		</header>
+		<main>
+			<section class="workspace">
+				<div class="toolbar">
+					<div class="space-control">
+						<span class="eyebrow">SIMILARITY SPACE</span>
+						<div class="tabs">
+							<button id="clap" class="active">CLAP</button>
+							<button id="timbral">Timbral</button>
+						</div>
+					</div>
+					<label class="search">Find a sample<input id="search" placeholder="Search filenames or paths…"></label>
+					<button id="reset">Reset</button>
+					<button id="sync16" class="sync-toggle" aria-pressed="false" title="Quantize drag-scrubbing to Live's 16th-note grid">1/16 Sync</button>
+					<button id="openBrowser" class="live-only" title="Open the full Drum Atlas interface in your default browser">Open Browser ↗</button>
+				</div>
+				<div class="map-wrap">
+					<canvas id="map" aria-label="Sample map. Click to audition; drag to scrub. Use the sample list for keyboard navigation."></canvas>
+					<div class="map-label">
+						<span class="live-dot"></span>
+						<span id="mapInfo">UMAP / 2D</span>
+					</div>
+					<div class="map-help">CLICK to play · DRAG to explore · SCROLL to zoom · SHIFT + DRAG to pan</div>
+					<div id="empty" hidden>No samples in this view.</div>
+                    <div id="liveSelected"></div>
+				</div>
+				<div class="transport">
+					<button id="play">▶ Replay</button>
+					<button id="stop">■ Stop</button>
+					<label>Volume <input id="volume" type="range" min="0" max="1" step=".01" value=".55"></label>
+					<label>Scrub interval <select id="debounce"><option value="90" selected>90 ms</option><option value="150">150 ms</option><option value="250">250 ms</option></select></label>
+					<span id="audioStatus">Ready to audition</span>
+				</div>
+				<div class="bottom">
+					<div>
+						<span class="eyebrow">LIBRARY</span>
+						<label><input id="rejected" type="checkbox"> Include rejected / unembedded</label>
+					</div>
+					<div id="sampleList" class="sample-list"></div>
+				</div>
+			</section>
+			<aside>
+				<span class="eyebrow">SELECTED SOUND</span>
+				<h1 id="name">Find your next hit.</h1>
+				<p id="path">Click a point or choose a sample below the map.</p>
+				<canvas id="wave" height="70"></canvas>
+				<div id="scores" class="scores"></div>
+				<p id="explain" class="muted">Colors describe brightness. Map distance is only a visual guide.</p>
+				<div class="neighbors-head">
+					<span class="eyebrow">NEAREST NEIGHBORS</span>
+					<button id="sequence">▶ Audition all</button>
+				</div>
+				<p class="muted" id="metric">Ranked in the full feature space.</p>
+				<div id="neighbors"></div>
+				<footer>Everything plays locally.<br>Scores are estimates, not probabilities.<br><span id="thresholds"></span></footer>
+			</aside>
+		</main>
+		<div id="error" role="alert" hidden></div>
+		<script src="/static/app.js"></script>
+	</body>
+</html>
