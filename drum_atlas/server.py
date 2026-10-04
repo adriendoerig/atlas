@@ -15,6 +15,9 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+import subprocess
+import sys
+
 from .store import connect
 from .index import neighbors
 
@@ -48,7 +51,41 @@ def create_app(db_path=None):
     # Lightweight in-memory relay between the full browser UI and the
     # ?view=live jweb~ UI. Nothing is persisted to disk.
     sync_clients = {}
+    live_heartbeats = {}
+    LIVE_HEARTBEAT_TTL = 3.0
     mutation_lock = asyncio.Lock()
+
+    def ableton_running():
+        """
+        A Max/jweb process can survive after Ableton closes, so window.max
+        alone is not proof that Live is actually available.
+
+        On macOS, look specifically for the main executable inside an
+        Ableton Live .app bundle.
+        """
+        if sys.platform != 'darwin':
+            # For now retain heartbeat-only behaviour on other platforms.
+            return True
+
+        try:
+            result = subprocess.run(
+                ['ps', '-axo', 'command='],
+                capture_output=True,
+                text=True,
+                timeout=1,
+                check=False,
+            )
+
+            return any(
+                'Ableton Live ' in line
+                and '.app/Contents/MacOS/Live' in line
+                for line in result.stdout.splitlines()
+            )
+
+        except Exception:
+            # If process detection itself fails, don't create a false
+            # "Live connected" state.
+            return False
 
     def pool_state():
         db = connect(db_path)
@@ -62,16 +99,37 @@ def create_app(db_path=None):
     }
 
     async def send_presence():
-        live_count = sum(1 for role in sync_clients.values() if role == 'live')
-        message = {'type': 'presence', 'live': live_count}
+        now = asyncio.get_running_loop().time()
+
+        live_count = 0
+
+        if ableton_running():
+            live_count = sum(
+                1
+                for ws, role in sync_clients.items()
+                if role == 'live'
+                and now - live_heartbeats.get(
+                    ws,
+                    float('-inf')
+                ) < LIVE_HEARTBEAT_TTL
+            )
+
+        message = {
+            'type': 'presence',
+            'live': live_count,
+        }
+
         dead = []
+
         for ws in list(sync_clients):
             try:
                 await ws.send_json(message)
             except Exception:
                 dead.append(ws)
+
         for ws in dead:
             sync_clients.pop(ws, None)
+            live_heartbeats.pop(ws, None)
 
     async def relay(message, exclude=None):
         dead = []
@@ -115,7 +173,15 @@ def create_app(db_path=None):
 
                 kind = message.get('type')
 
-                if kind == 'select':
+                if kind == 'live_heartbeat':
+                    if role == 'live':
+                        live_heartbeats[websocket] = asyncio.get_running_loop().time()
+                        await send_presence()
+
+                elif kind == 'presence_query':
+                    await send_presence()
+
+                elif kind == 'select':
                     try:
                         sample_id = int(message.get('id'))
                     except (TypeError, ValueError):
@@ -170,6 +236,7 @@ def create_app(db_path=None):
             pass
         finally:
             sync_clients.pop(websocket, None)
+            live_heartbeats.pop(websocket, None)
 
             # A scrub gesture cannot survive a disconnected controller.
             # Reset it so a reconnect never leaves the quantized metro running.
@@ -328,24 +395,37 @@ def create_app(db_path=None):
             db.close()
 
     @app.get('/api/neighbors/{sample_id}')
-    def similar(sample_id: int, space: str = 'clap', k: int = Query(8, ge=1, le=50)):
+    def similar(
+        sample_id: int,
+        space: str = 'clap',
+        k: int = Query(8, ge=1, le=50),
+        explicit: bool = False,
+    ):
+        # Nearest-neighbor lookup is deliberately opt-in. This protects the
+        # interactive scrub path (and the server from stale browser tabs) from
+        # accidentally launching expensive distance calculations.
+        if not explicit:
+            return []
+
         db = connect(db_path)
         try:
             if space not in ('clap', 'timbral'):
                 raise HTTPException(400, 'Unknown space')
             try:
-                allowed = set(pools.state(db)['sample_ids'])
-                return [n for n in neighbors(db, space, sample_id, 1000000) if n['id'] in allowed][:k]
+                # Distance calculations scale with the active pool selection,
+                # not with the entire globally analysed library.
+                allowed = pools.state(db)['sample_ids']
+                return neighbors(db, space, sample_id, k, allowed_ids=allowed)
             except KeyError:
                 raise HTTPException(404, 'Sample is not in this map')
         finally:
             db.close()
 
     @app.get('/api/audio/{sample_id}')
-    def audio(sample_id: int):
+    def audio(sample_id: int, convert: bool = Query(False)):
         db = connect(db_path)
         row = db.execute(
-            'SELECT path,mtime_ns,size FROM samples '
+            'SELECT path,mtime_ns,size,duration FROM samples '
             'WHERE id=? AND active=1 AND error IS NULL',
             (sample_id,),
         ).fetchone()
@@ -362,6 +442,17 @@ def create_app(db_path=None):
         if st.st_mtime_ns != row['mtime_ns'] or st.st_size != row['size']:
             raise HTTPException(409, 'File changed; rescan before auditioning')
 
+        # Fast path: serve ordinary short samples exactly as they are on disk.
+        # This removes the expensive server-side decode -> NumPy -> WAV encode
+        # round trip from the hot audition path. The browser can request
+        # ?convert=1 if its WebAudio decoder cannot read the original format.
+        if not convert and (row['duration'] is None or row['duration'] <= 12):
+            return FileResponse(
+                path,
+                headers={'Cache-Control': 'no-store'},
+            )
+
+        # Compatibility / long-file fallback: preserve the previous behavior.
         try:
             with sf.SoundFile(path) as f:
                 rate = f.samplerate

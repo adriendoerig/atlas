@@ -16,6 +16,7 @@ let poolMembers = new Set();
 let selected = null;
 let visible = [];
 let neighborIds = [];
+const sampleButtons = new Map();
 
 let zoom = 1;
 let pan = [0, 0];
@@ -66,6 +67,7 @@ let playVersion = 0;
 let sequenceVersion = 0;
 
 const buffers = new Map();
+let audioLoadController = null;
 
 // -----------------------------------------------------------------------------
 // Browser <-> Ableton/Max synchronization
@@ -73,6 +75,8 @@ const buffers = new Map();
 
 let syncSocket = null;
 let syncRetry = null;
+let liveHeartbeatTimer = null;
+let presencePollTimer = null;
 let liveConnected = false;
 let libraryReady = false;
 let pendingSyncMessages = [];
@@ -114,7 +118,10 @@ function setScrubSync(enabled, fromSync = false) {
 }
 
 function setScrubActive(active, fromSync = false) {
-    const next = !!active;
+    // The scrub-active signal exists only to arm Max's quantized 1/16 metro.
+    // The 90/150/250 ms modes are ordinary one-shot browser auditions and
+    // must never leave Max's repeating clock armed.
+    const next = scrubSync ? !!active : false;
     if (next === scrubActive) return;
 
     scrubActive = next;
@@ -146,6 +153,13 @@ function applySyncMessage(message) {
                 'Live connected · auditioning through Ableton';
         }
 
+        // Presence used to be able to go false while the old status text stayed
+        // on screen. Reset it explicitly so the UI and audition routing agree.
+        if (!liveView && !liveConnected && wasConnected) {
+            $('audioStatus').textContent =
+                'Ready to audition';
+        }
+
         return;
     }
 
@@ -162,7 +176,11 @@ function applySyncMessage(message) {
 
     if (message.type === 'state') {
         if (message.pool_state) applyPoolState(message.pool_state);
-        if (message.mode === 'clap' || message.mode === 'timbral') {
+
+        if (
+            message.mode === 'clap' ||
+            message.mode === 'timbral'
+        ) {
             setMode(message.mode, true);
         }
 
@@ -264,13 +282,58 @@ function connectSync() {
     const ws = new WebSocket(url);
 
     syncSocket = ws;
-    ws.onopen = () => load();
+
+    ws.onopen = () => {
+        load();
+
+        clearInterval(liveHeartbeatTimer);
+        clearInterval(presencePollTimer);
+
+        if (liveView) {
+            // Only an actual jweb~/MaxBridge page is allowed to announce Live.
+            // Check window.max on every tick as well, in case MaxBridge becomes
+            // available a moment after the page/websocket itself opens.
+            const heartbeat = () => {
+                if (window.max) {
+                    syncSend({
+                        type: 'live_heartbeat',
+                    });
+                }
+            };
+
+            heartbeat();
+
+            liveHeartbeatTimer =
+                setInterval(
+                    heartbeat,
+                    1000
+                );
+
+        } else {
+            // Ask periodically so a zombie Live websocket naturally expires
+            // even if the OS does not deliver its close event promptly.
+            const pollPresence = () => {
+                syncSend({
+                    type: 'presence_query',
+                });
+            };
+
+            pollPresence();
+
+            presencePollTimer =
+                setInterval(
+                    pollPresence,
+                    1000
+                );
+        }
+    };
 
     ws.onmessage = (event) => {
         try {
             applySyncMessage(
                 JSON.parse(event.data)
             );
+
         } catch (e) {
             console.warn(
                 'Drum Atlas sync message failed:',
@@ -284,8 +347,17 @@ function connectSync() {
             syncSocket = null;
         }
 
+        clearInterval(liveHeartbeatTimer);
+        clearInterval(presencePollTimer);
+
+        liveHeartbeatTimer = null;
+        presencePollTimer = null;
+
         if (!liveView) {
             liveConnected = false;
+
+            $('audioStatus').textContent =
+                'Ready to audition';
         }
 
         syncRetry =
@@ -317,7 +389,12 @@ function error(e) {
 
 async function get(url) {
     const r =
-        await fetch(url, {cache: 'no-store'});
+        await fetch(
+            url,
+            {
+                cache: 'no-store',
+            }
+        );
 
     if (!r.ok) {
         let e;
@@ -394,7 +471,38 @@ function stop() {
         'Stopped';
 }
 
-async function buffer(id) {
+async function fetchAudioBytes(url, signal) {
+    const r =
+        await fetch(
+            url,
+            {
+                signal,
+                cache: 'no-store',
+            }
+        );
+
+    if (!r.ok) {
+        let detail =
+            `Audio request failed (${r.status})`;
+
+        try {
+            const e =
+                await r.json();
+
+            detail =
+                e.detail ||
+                detail;
+        } catch {}
+
+        throw Error(
+            detail
+        );
+    }
+
+    return r.arrayBuffer();
+}
+
+async function buffer(id, signal) {
     if (buffers.has(id)) {
         const b =
             buffers.get(id);
@@ -405,24 +513,37 @@ async function buffer(id) {
         return b;
     }
 
-    const r =
-        await fetch(
-            `/api/audio/${id}`
-        );
+    // Fast path: /api/audio now serves the original short sample directly.
+    // Most WAV/AIFF/MP3/FLAC/OGG files can therefore skip Python decoding and
+    // WAV re-encoding entirely. If WebAudio cannot decode a particular source
+    // format, retry once through the server's compatibility converter.
+    let b;
 
-    if (!r.ok) {
-        const e =
-            await r.json();
+    try {
+        b =
+            await audioCtx.decodeAudioData(
+                await fetchAudioBytes(
+                    `/api/audio/${id}`,
+                    signal
+                )
+            );
 
-        throw Error(
-            e.detail
-        );
+    } catch (e) {
+        if (
+            e?.name === 'AbortError' ||
+            signal?.aborted
+        ) {
+            throw e;
+        }
+
+        b =
+            await audioCtx.decodeAudioData(
+                await fetchAudioBytes(
+                    `/api/audio/${id}?convert=1`,
+                    signal
+                )
+            );
     }
-
-    const b =
-        await audioCtx.decodeAudioData(
-            await r.arrayBuffer()
-        );
 
     buffers.set(
         id,
@@ -525,7 +646,10 @@ async function play(
     id,
     sequence = false
 ) {
-    if (!poolMembers.has(id)) return 0;
+    if (!poolMembers.has(id)) {
+        return 0;
+    }
+
     if (!sequence) {
         clearScrub();
         ++sequenceVersion;
@@ -534,6 +658,19 @@ async function play(
     const ticket =
         ++playVersion;
 
+    // Scrubbing is a latest-selection-wins interaction. Do not allow old,
+    // no-longer-useful audio downloads to queue behind the sound under the
+    // cursor now.
+    if (audioLoadController) {
+        audioLoadController.abort();
+    }
+
+    const controller =
+        new AbortController();
+
+    audioLoadController =
+        controller;
+
     try {
         await unlock();
 
@@ -541,7 +678,18 @@ async function play(
             'Loading…';
 
         const b =
-            await buffer(id);
+            await buffer(
+                id,
+                controller.signal
+            );
+
+        if (
+            audioLoadController ===
+            controller
+        ) {
+            audioLoadController =
+                null;
+        }
 
         if (
             ticket !==
@@ -560,6 +708,12 @@ async function play(
 
         src.buffer =
             b;
+
+        // Normal 90/150/250 ms scrub modes are one-shots:
+        // each selection starts exactly one AudioBufferSourceNode
+        // and never loops it.
+        src.loop =
+            false;
 
         src.connect(
             gain
@@ -614,6 +768,23 @@ async function play(
 
     } catch (e) {
         if (
+            audioLoadController ===
+            controller
+        ) {
+            audioLoadController =
+                null;
+        }
+
+        // AbortError is expected when the cursor has already moved to a newer
+        // sample. It is not a playback failure and should stay invisible.
+        if (
+            e?.name === 'AbortError' ||
+            controller.signal.aborted
+        ) {
+            return 0;
+        }
+
+        if (
             ticket ===
             playVersion
         ) {
@@ -663,13 +834,20 @@ async function select(
     id,
     audition = true,
     fromScrub = false,
-    fromSync = false
+    fromSync = false,
+    withNeighbors = false
 ) {
     if (!fromScrub) {
         clearScrub();
     }
 
-    if (!poolMembers.has(id)) return;
+    if (!poolMembers.has(id)) {
+        return;
+    }
+
+    const previousSelected =
+        selected;
+
     selected =
         id;
 
@@ -694,9 +872,11 @@ async function select(
             s.one_shot,
             'ONE-SHOTNESS'
         ),
+
         score(
             s.drum_clap ??
                 s.drum_heuristic,
+
             s.drum_clap == null
                 ? 'PERCUSSION · HEURISTIC'
                 : 'PERCUSSION · CLAP'
@@ -751,7 +931,10 @@ async function select(
         true;
 
     draw();
-    list();
+    updateListSelection(
+        previousSelected,
+        id
+    );
 
     /*
      * If this is the full browser and
@@ -763,7 +946,10 @@ async function select(
     const quantizedScrub =
         scrubSync &&
         fromScrub &&
-        (liveView || liveConnected);
+        (
+            liveView ||
+            liveConnected
+        );
 
     if (
         audition &&
@@ -784,6 +970,7 @@ async function select(
             quantizedScrub
                 ? '1/16 sync · auditioning through Ableton'
                 : 'Live connected · auditioning through Ableton';
+
     } else if (
         audition &&
         quantizedScrub &&
@@ -805,10 +992,21 @@ async function select(
             ? '512 dimensions · cosine distance'
             : '32 standardized features · Euclidean distance';
 
+    // Nearest-neighbor lookup is intentionally opt-in. Normal clicking and
+    // scrubbing should stay purely about auditioning; Option/Alt-click asks for
+    // the more expensive similarity query. The compact Live view never needs it.
+    if (
+        !withNeighbors ||
+        fromScrub ||
+        liveView
+    ) {
+        return;
+    }
+
     try {
         const ns =
             await get(
-                `/api/neighbors/${id}?space=${mode}`
+                `/api/neighbors/${id}?space=${mode}&explicit=1`
             );
 
         if (
@@ -856,9 +1054,13 @@ async function select(
             );
 
             b.onclick =
-                () =>
+                (e) =>
                     select(
-                        n.id
+                        n.id,
+                        true,
+                        false,
+                        false,
+                        e.altKey
                     );
 
             $('neighbors').append(
@@ -884,10 +1086,35 @@ function filtered() {
 
     return data.samples.filter(
         (s) =>
-            poolMembers.has(s.id) && s.path
+            poolMembers.has(s.id) &&
+            s.path
                 .toLowerCase()
                 .includes(q)
     );
+}
+
+function updateListSelection(
+    previousId,
+    nextId
+) {
+    if (
+        previousId != null &&
+        previousId !== nextId
+    ) {
+        sampleButtons
+            .get(previousId)
+            ?.classList.remove(
+                'selected'
+            );
+    }
+
+    if (nextId != null) {
+        sampleButtons
+            .get(nextId)
+            ?.classList.add(
+                'selected'
+            );
+    }
 }
 
 function list() {
@@ -904,6 +1131,8 @@ function list() {
 
     $('sampleList')
         .replaceChildren();
+
+    sampleButtons.clear();
 
     for (
         const s of samples
@@ -930,10 +1159,19 @@ function list() {
             s.path;
 
         b.onclick =
-            () =>
+            (e) =>
                 select(
-                    s.id
+                    s.id,
+                    true,
+                    false,
+                    false,
+                    e.altKey
                 );
+
+        sampleButtons.set(
+            s.id,
+            b
+        );
 
         $('sampleList').append(
             b
@@ -1330,7 +1568,13 @@ canvas.onpointerdown =
             id != null &&
             !e.shiftKey
         ) {
-            select(id);
+            select(
+                id,
+                true,
+                false,
+                false,
+                e.altKey
+            );
         }
     };
 
@@ -1361,8 +1605,14 @@ canvas.onpointermove =
         }
 
         if (!drag.scrubbing) {
-            drag.scrubbing = true;
-            setScrubActive(true);
+            drag.scrubbing =
+                true;
+
+            if (scrubSync) {
+                setScrubActive(
+                    true
+                );
+            }
         }
 
         scrub(
@@ -1371,11 +1621,14 @@ canvas.onpointermove =
     };
 
 function endPointerGesture() {
-    if (drag?.scrubbing) {
-        setScrubActive(false);
+    if (scrubActive) {
+        setScrubActive(
+            false
+        );
     }
 
-    drag = null;
+    drag =
+        null;
 }
 
 canvas.onpointerup =
@@ -1384,11 +1637,15 @@ canvas.onlostpointercapture =
 
 canvas.onpointercancel =
     () => {
-        if (drag?.scrubbing) {
-            setScrubActive(false);
+        if (scrubActive) {
+            setScrubActive(
+                false
+            );
         }
 
-        drag = null;
+        drag =
+            null;
+
         clearScrub();
     };
 
@@ -1529,7 +1786,8 @@ function setMode(
         data.spaces[mode];
 
     $('mapInfo').textContent =
-        `${mode.toUpperCase()} / ${data.projection?.scope === 'selection' ? 'SELECTION / ' : ''}` +
+        `${mode.toUpperCase()} / ` +
+        `${data.projection?.scope === 'selection' ? 'SELECTION / ' : ''}` +
         `${detail?.projection || 'No map'} / ` +
         `${detail?.dimensions || 0}D → 2D`;
 
@@ -1551,11 +1809,23 @@ function setMode(
     }
 }
 
-let loadingLibrary = false;
-let reloadQueued = false;
+let loadingLibrary =
+    false;
+
+let reloadQueued =
+    false;
+
 async function load() {
-    if (loadingLibrary) { reloadQueued = true; return; }
-    loadingLibrary = true;
+    if (loadingLibrary) {
+        reloadQueued =
+            true;
+
+        return;
+    }
+
+    loadingLibrary =
+        true;
+
     libraryReady =
         false;
 
@@ -1564,13 +1834,21 @@ async function load() {
 
         buffers.clear();
 
-        const previousProjection = data.projection?.key;
+        const previousProjection =
+            data.projection?.key;
+
         data =
             await get(
                 '/api/library'
             );
 
-        if (previousProjection !== data.projection?.key) { zoom = 1; pan = [0, 0]; }
+        if (
+            previousProjection !==
+            data.projection?.key
+        ) {
+            zoom = 1;
+            pan = [0, 0];
+        }
 
         byId =
             new Map(
@@ -1628,10 +1906,24 @@ async function load() {
             true
         );
 
-        $('projectionStatus').textContent = data.projection?.scope === 'selection' ? 'Selection map' : 'Global map';
-        $('embedSelection').classList.toggle('active', data.projection?.scope === 'selection');
-        $('globalEmbed').classList.toggle('active', data.projection?.scope !== 'selection');
-        applyPoolState(data.pool_state);
+        $('projectionStatus').textContent =
+            data.projection?.scope === 'selection'
+                ? 'Selection map'
+                : 'Global map';
+
+        $('embedSelection').classList.toggle(
+            'active',
+            data.projection?.scope === 'selection'
+        );
+
+        $('globalEmbed').classList.toggle(
+            'active',
+            data.projection?.scope !== 'selection'
+        );
+
+        applyPoolState(
+            data.pool_state
+        );
 
         libraryReady =
             true;
@@ -1642,111 +1934,426 @@ async function load() {
             true;
 
     } catch (e) {
-        $('poolSummary').textContent = 'Server unavailable';
+        $('poolSummary').textContent =
+            'Server unavailable';
+
         error(e);
+
     } finally {
-        loadingLibrary = false;
-        if (reloadQueued) { reloadQueued = false; load(); }
+        loadingLibrary =
+            false;
+
+        if (reloadQueued) {
+            reloadQueued =
+                false;
+
+            load();
+        }
     }
 }
 
 function applyPoolState(next) {
-    if (!next) return;
-    poolState = next;
-    poolMembers = new Set(next.sample_ids);
-    if (selected !== null && !poolMembers.has(selected)) {
+    if (!next) {
+        return;
+    }
+
+    poolState =
+        next;
+
+    poolMembers =
+        new Set(
+            next.sample_ids
+        );
+
+    if (
+        selected !== null &&
+        !poolMembers.has(
+            selected
+        )
+    ) {
         stop();
-        selected = null;
+
+        selected =
+            null;
+
         ++selectionVersion;
-        neighborIds = [];
-        $('sequence').disabled = true;
-        $('wave').getContext('2d').clearRect(0,0,$('wave').width,$('wave').height);
-        $('name').textContent = 'Find your next hit.';
-        $('path').textContent = 'Choose a sample in the active pools.';
-        $('neighbors').replaceChildren();
-        $('scores').replaceChildren();
-        $('liveSelected').textContent = '';
+
+        neighborIds =
+            [];
+
+        $('sequence').disabled =
+            true;
+
+        $('wave')
+            .getContext('2d')
+            .clearRect(
+                0,
+                0,
+                $('wave').width,
+                $('wave').height
+            );
+
+        $('name').textContent =
+            'Find your next hit.';
+
+        $('path').textContent =
+            'Choose a sample in the active pools.';
+
+        $('neighbors')
+            .replaceChildren();
+
+        $('scores')
+            .replaceChildren();
+
+        $('liveSelected').textContent =
+            '';
     }
-    $('poolSummary').textContent = `${next.active_pool_ids.length} active · ${next.sample_ids.length} samples`;
-    $('poolList').replaceChildren();
-    for (const pool of next.pools) {
-        const row = document.createElement('div');
-        row.className = 'pool-row';
-        const label = document.createElement('label');
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.checked = next.active_pool_ids.includes(pool.id);
-        checkbox.onchange = () => poolAction(async () => {
-            const ids = new Set(poolState.active_pool_ids);
-            if (checkbox.checked) ids.add(pool.id); else ids.delete(pool.id);
-            applyPoolState(await poolRequest('/api/pools/active','PUT',{ids:[...ids]}));
-        });
-        label.append(checkbox, document.createTextNode(` ${pool.name} (${pool.count})`));
-        row.append(label);
-        if (pool.kind === 'folder') {
-            const rescan = document.createElement('button');
-            rescan.textContent = 'Rescan';
-            rescan.onclick = () => poolAction(async () => {
-                await poolRequest(`/api/pools/${pool.id}/rescan`,'POST');
-                await load();
-            });
-            row.append(rescan);
+
+    $('poolSummary').textContent =
+        `${next.active_pool_ids.length} active · ` +
+        `${next.sample_ids.length} samples`;
+
+    $('poolList')
+        .replaceChildren();
+
+    for (
+        const pool of next.pools
+    ) {
+        const row =
+            document.createElement(
+                'div'
+            );
+
+        row.className =
+            'pool-row';
+
+        const label =
+            document.createElement(
+                'label'
+            );
+
+        const checkbox =
+            document.createElement(
+                'input'
+            );
+
+        checkbox.type =
+            'checkbox';
+
+        checkbox.checked =
+            next.active_pool_ids.includes(
+                pool.id
+            );
+
+        checkbox.onchange =
+            () =>
+                poolAction(
+                    async () => {
+                        const ids =
+                            new Set(
+                                poolState.active_pool_ids
+                            );
+
+                        if (checkbox.checked) {
+                            ids.add(
+                                pool.id
+                            );
+                        } else {
+                            ids.delete(
+                                pool.id
+                            );
+                        }
+
+                        applyPoolState(
+                            await poolRequest(
+                                '/api/pools/active',
+                                'PUT',
+                                {
+                                    ids:
+                                        [
+                                            ...ids,
+                                        ],
+                                }
+                            )
+                        );
+                    }
+                );
+
+        label.append(
+            checkbox,
+            document.createTextNode(
+                ` ${pool.name} (${pool.count})`
+            )
+        );
+
+        row.append(
+            label
+        );
+
+        if (
+            pool.kind ===
+            'folder'
+        ) {
+            const rescan =
+                document.createElement(
+                    'button'
+                );
+
+            rescan.textContent =
+                'Rescan';
+
+            rescan.onclick =
+                () =>
+                    poolAction(
+                        async () => {
+                            await poolRequest(
+                                `/api/pools/${pool.id}/rescan`,
+                                'POST'
+                            );
+
+                            await load();
+                        }
+                    );
+
+            row.append(
+                rescan
+            );
         }
-        const remove = document.createElement('button');
-        remove.textContent = 'Delete';
-        remove.title = 'Delete pool; samples and analysis stay in the global library';
-        remove.onclick = () => {
-            if (confirm(`Delete pool “${pool.name}”? The samples and analysis will be kept.`))
-                poolAction(async () => applyPoolState(await poolRequest(`/api/pools/${pool.id}`,'DELETE')));
-        };
-        row.append(remove);
-        $('poolList').append(row);
+
+        const remove =
+            document.createElement(
+                'button'
+            );
+
+        remove.textContent =
+            'Delete';
+
+        remove.title =
+            'Delete pool; samples and analysis stay in the global library';
+
+        remove.onclick =
+            () => {
+                if (
+                    confirm(
+                        `Delete pool “${pool.name}”? The samples and analysis will be kept.`
+                    )
+                ) {
+                    poolAction(
+                        async () =>
+                            applyPoolState(
+                                await poolRequest(
+                                    `/api/pools/${pool.id}`,
+                                    'DELETE'
+                                )
+                            )
+                    );
+                }
+            };
+
+        row.append(
+            remove
+        );
+
+        $('poolList').append(
+            row
+        );
     }
+
     draw();
     list();
-    if (selected !== null) select(selected, false, false, true);
-    if (poolBusy) $('poolManager').querySelectorAll('button,input').forEach(el => el.disabled = true);
-}
 
-async function poolRequest(url, method, body) {
-    const response = await fetch(url, {method, headers:{'Content-Type':'application/json'},
-        ...(body ? {body:JSON.stringify(body)} : {})});
-    const result = await response.json();
-    if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : JSON.stringify(result.detail));
-    return result;
-}
-let poolBusy = false;
-async function poolAction(action) {
-    if (poolBusy) return;
-    poolBusy = true;
-    $('poolProgress').textContent = 'Working… Analysis may take a few minutes.';
-    $('poolManager').querySelectorAll('button,input').forEach(el => el.disabled = true);
-    try { await action(); $('poolProgress').textContent = 'Ready'; }
-    catch (e) { $('poolProgress').textContent = e.message; }
-    finally {
-        poolBusy = false;
-        $('poolManager').querySelectorAll('button,input').forEach(el => el.disabled = false);
+    if (
+        selected !==
+        null
+    ) {
+        select(
+            selected,
+            false,
+            false,
+            true
+        );
+    }
+
+    if (poolBusy) {
+        $('poolManager')
+            .querySelectorAll(
+                'button,input'
+            )
+            .forEach(
+                (el) =>
+                    el.disabled =
+                        true
+            );
     }
 }
-$('embedSelection').onclick = () => poolAction(async () => {
-    await poolRequest('/api/projection/selection','POST');
-    await load();
-});
-$('globalEmbed').onclick = () => poolAction(async () => {
-    await poolRequest('/api/projection/global','POST');
-    await load();
-});
-$('newPool').onclick = () => { $('poolForm').hidden = false; $('poolName').focus(); };
-$('cancelPool').onclick = () => { $('poolForm').hidden = true; };
-$('poolForm').onsubmit = event => {
-    event.preventDefault();
-    poolAction(async () => {
-        await poolRequest('/api/pools','POST',{name:$('poolName').value,kind:'folder',roots:[$('poolFolder').value]});
-        $('poolForm').hidden = true;
-        $('poolForm').reset();
-        await load();
-    });
-};
+
+async function poolRequest(
+    url,
+    method,
+    body
+) {
+    const response =
+        await fetch(
+            url,
+            {
+                method,
+
+                headers: {
+                    'Content-Type':
+                        'application/json',
+                },
+
+                ...(
+                    body
+                        ? {
+                            body:
+                                JSON.stringify(
+                                    body
+                                ),
+                        }
+                        : {}
+                ),
+            }
+        );
+
+    const result =
+        await response.json();
+
+    if (!response.ok) {
+        throw new Error(
+            typeof result.detail ===
+                'string'
+                ? result.detail
+                : JSON.stringify(
+                    result.detail
+                )
+        );
+    }
+
+    return result;
+}
+
+let poolBusy =
+    false;
+
+async function poolAction(action) {
+    if (poolBusy) {
+        return;
+    }
+
+    poolBusy =
+        true;
+
+    $('poolProgress').textContent =
+        'Working… Analysis may take a few minutes.';
+
+    $('poolManager')
+        .querySelectorAll(
+            'button,input'
+        )
+        .forEach(
+            (el) =>
+                el.disabled =
+                    true
+        );
+
+    try {
+        await action();
+
+        $('poolProgress').textContent =
+            'Ready';
+
+    } catch (e) {
+        $('poolProgress').textContent =
+            e.message;
+
+    } finally {
+        poolBusy =
+            false;
+
+        $('poolManager')
+            .querySelectorAll(
+                'button,input'
+            )
+            .forEach(
+                (el) =>
+                    el.disabled =
+                        false
+            );
+    }
+}
+
+$('embedSelection').onclick =
+    () =>
+        poolAction(
+            async () => {
+                await poolRequest(
+                    '/api/projection/selection',
+                    'POST'
+                );
+
+                await load();
+            }
+        );
+
+$('globalEmbed').onclick =
+    () =>
+        poolAction(
+            async () => {
+                await poolRequest(
+                    '/api/projection/global',
+                    'POST'
+                );
+
+                await load();
+            }
+        );
+
+$('newPool').onclick =
+    () => {
+        $('poolForm').hidden =
+            false;
+
+        $('poolName').focus();
+    };
+
+$('cancelPool').onclick =
+    () => {
+        $('poolForm').hidden =
+            true;
+    };
+
+$('poolForm').onsubmit =
+    (event) => {
+        event.preventDefault();
+
+        poolAction(
+            async () => {
+                await poolRequest(
+                    '/api/pools',
+                    'POST',
+                    {
+                        name:
+                            $('poolName').value,
+
+                        kind:
+                            'folder',
+
+                        roots: [
+                            $('poolFolder').value,
+                        ],
+                    }
+                );
+
+                $('poolForm').hidden =
+                    true;
+
+                $('poolForm').reset();
+
+                await load();
+            }
+        );
+    };
 
 $('clap').onclick =
     () =>
@@ -1782,15 +2389,23 @@ $('reset').onclick =
 
 $('sync16').onclick =
     () => {
-        setScrubSync(!scrubSync);
+        setScrubSync(
+            !scrubSync
+        );
     };
 
 $('openBrowser').onclick =
     () => {
         if (window.max) {
-            window.max.outlet('openbrowser');
+            window.max.outlet(
+                'openbrowser'
+            );
+
         } else {
-            window.open('/', '_blank');
+            window.open(
+                '/',
+                '_blank'
+            );
         }
     };
 
@@ -1838,7 +2453,9 @@ $('sequence').onclick =
             sequenceVersion;
 
         const ids =
-            [...neighborIds];
+            [
+                ...neighborIds,
+            ];
 
         for (
             const id of ids

@@ -119,8 +119,25 @@ def build_spaces(db,*,clap,one_shot,drum):
             db.execute('INSERT OR REPLACE INTO spaces VALUES(?,?,?,?)',(mode,sig,metric,json.dumps(detail)))
     db.commit()
 
-def neighbors(db,space,sample_id,k=8):
-    rows=db.execute('SELECT sample_id,vector FROM points WHERE space=? ORDER BY sample_id',(space,)).fetchall()
+def neighbors(db,space,sample_id,k=8,allowed_ids=None):
+    # Restrict the runtime distance calculation to the currently active pools.
+    # Analysis/features remain global; only the interactive comparison set shrinks.
+    if allowed_ids is None:
+        rows=db.execute(
+            'SELECT sample_id,vector FROM points WHERE space=? ORDER BY sample_id',
+            (space,),
+        ).fetchall()
+    else:
+        allowed_ids=sorted({int(i) for i in allowed_ids})
+        if not allowed_ids:
+            raise KeyError(sample_id)
+        rows=db.execute(
+            '''SELECT sample_id,vector FROM points
+               WHERE space=? AND sample_id IN (SELECT value FROM json_each(?))
+               ORDER BY sample_id''',
+            (space,json.dumps(allowed_ids)),
+        ).fetchall()
+
     ids=[r['sample_id'] for r in rows]
     if sample_id not in ids: raise KeyError(sample_id)
     x=np.array([np.frombuffer(r['vector'],dtype='<f4') for r in rows])
