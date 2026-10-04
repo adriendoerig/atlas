@@ -36,6 +36,13 @@ def create_app(db_path=None):
         TrustedHostMiddleware,
         allowed_hosts=['127.0.0.1', 'localhost', 'testserver'],
     )
+    @app.middleware('http')
+    async def fresh_ui(request, call_next):
+        response = await call_next(request)
+        if request.url.path == '/' or request.url.path.startswith('/static/') or request.url.path == '/api/library':
+            response.headers['Cache-Control'] = 'no-store'
+        return response
+
     app.mount('/static', StaticFiles(directory=STATIC), name='static')
 
     # Lightweight in-memory relay between the full browser UI and the

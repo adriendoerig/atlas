@@ -4,7 +4,9 @@
 		<meta charset="UTF-8">
 		<meta name="viewport" content="width=device-width,initial-scale=1">
 		<title>Drum Atlas</title>
-		<link rel="stylesheet" href="/static/style.css">
+		<script>if (/[?&]view=live(?:&|$)/.test(location.search)) document.documentElement.classList.add('live-view');</script>
+        <style>html.live-view #poolManager { display: none !important; }</style>
+        <link rel="stylesheet" href="/static/style.css?v=live-layout-3">
 	</head>
 	<body>
 		<header>
@@ -87,6 +89,6 @@
 			</aside>
 		</main>
 		<div id="error" role="alert" hidden></div>
-		<script src="/static/app.js"></script>
+		<script src="/static/app.js?v=live-layout-3"></script>
 	</body>
 </html>

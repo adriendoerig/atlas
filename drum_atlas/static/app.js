@@ -264,6 +264,7 @@ function connectSync() {
     const ws = new WebSocket(url);
 
     syncSocket = ws;
+    ws.onopen = () => load();
 
     ws.onmessage = (event) => {
         try {
@@ -316,7 +317,7 @@ function error(e) {
 
 async function get(url) {
     const r =
-        await fetch(url);
+        await fetch(url, {cache: 'no-store'});
 
     if (!r.ok) {
         let e;
@@ -1550,7 +1551,11 @@ function setMode(
     }
 }
 
+let loadingLibrary = false;
+let reloadQueued = false;
 async function load() {
+    if (loadingLibrary) { reloadQueued = true; return; }
+    loadingLibrary = true;
     libraryReady =
         false;
 
@@ -1637,7 +1642,11 @@ async function load() {
             true;
 
     } catch (e) {
+        $('poolSummary').textContent = 'Server unavailable';
         error(e);
+    } finally {
+        loadingLibrary = false;
+        if (reloadQueued) { reloadQueued = false; load(); }
     }
 }
 

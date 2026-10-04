@@ -141,4 +141,7 @@ body.live-view #error{
 #poolForm label {display:inline-flex;gap:6px;align-items:center;margin:4px;}
 #poolFolder {min-width:280px;}
 #poolProgress {margin-left:10px;color:#b8d5d2;}
-.live-view .pool-manager {display:none;}
+html.live-view #poolManager {display:none !important;}
+body.live-view .toolbar {grid-row:1;position:relative;z-index:3;flex-shrink:0;}
+body.live-view .map-wrap {grid-row:2;min-width:0;}
+

@@ -159,3 +159,19 @@ combination or library invalidates an incompatible active layout and displays
 the global map. Up to 20 layouts are cached persistently; unchanged combinations
 can be recalled without recomputing. Global coordinates and nearest-neighbor
 metrics are untouched. Very small selections use a simple row layout.
+
+## Double-click shortcuts
+
+The project folder contains:
+
+- `Launch.command`: starts the server and prevents a second launcher instance.
+- `Open Drum Atlas.webloc`: opens the full interface in your default browser.
+  You can copy this shortcut to your Desktop or drag it to the Dock.
+- `Cleanup.command`: stops only the server recorded by this project's launcher.
+  It checks process identity before stopping it; no samples, pools, or caches are
+  deleted. Ctrl-C in the launch terminal works too. Stopping is optional when
+  you finish a session, but frees the server's resources.
+
+After this UI update, reload the Max web page once. The compact Live view hides
+pool management before rendering, fixes toolbar/map grid placement, and refreshes
+its library automatically when the server connection is re-established.
