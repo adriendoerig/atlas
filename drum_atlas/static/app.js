@@ -53,7 +53,7 @@ function scrub(id) {
 
     const delay = Math.max(
         0,
-        +$('debounce').value - (performance.now() - lastScrub)
+        90 - (performance.now() - lastScrub)
     );
 
     if (delay === 0) trigger();
@@ -80,6 +80,7 @@ let presencePollTimer = null;
 let liveConnected = false;
 let libraryReady = false;
 let pendingSyncMessages = [];
+let scrubMode = 'one-shot';
 let scrubSync = false;
 let scrubActive = false;
 
@@ -89,37 +90,31 @@ function syncSend(message) {
     }
 }
 
-function setScrubSync(enabled, fromSync = false) {
-    scrubSync = !!enabled;
-
-    const button = $('sync16');
-    if (button) {
-        button.classList.toggle('active', scrubSync);
-        button.setAttribute('aria-pressed', scrubSync ? 'true' : 'false');
-    }
-
-    // The jweb~ page has MaxBridge. This therefore updates the Max patch
-    // whether the toggle was changed in Live or in the full browser.
-    if (window.max) {
-        window.max.outlet('scrubsync', scrubSync ? 1 : 0);
-    }
-
-    if (!fromSync) {
-        syncSend({
-            type: 'scrub_sync',
-            enabled: scrubSync,
-        });
-    }
-
-    // Turning quantization off should also stop a currently running scrub.
-    if (!scrubSync && scrubActive) {
+const SCRUB_MODES = ['one-shot', '16n', '8n', '4n'];
+function setScrubMode(next, fromSync = false) {
+    if (!SCRUB_MODES.includes(next)) return;
+    // Stop the old gesture before changing the Max clock's interval.
+    if (next !== scrubMode) {
+        clearScrub();
         setScrubActive(false, fromSync);
     }
+    scrubMode = next;
+    scrubSync = next !== 'one-shot';
+    $('scrubMode').value = next;
+    if (window.max) {
+        if (scrubSync) window.max.outlet('scrubdivision', next);
+        window.max.outlet('scrubsync', scrubSync ? 1 : 0);
+    }
+    if (!fromSync) syncSend({type:'scrub_mode', mode:next});
+}
+function setScrubSync(enabled, fromSync = false) {
+    // Compatibility with older browser clients using the boolean protocol.
+    setScrubMode(enabled ? (scrubSync ? scrubMode : '16n') : 'one-shot', fromSync);
 }
 
 function setScrubActive(active, fromSync = false) {
-    // The scrub-active signal exists only to arm Max's quantized 1/16 metro.
-    // The 90/150/250 ms modes are ordinary one-shot browser auditions and
+    // The scrub-active signal exists only to arm Max's quantized metro.
+    // The 90 ms one-shot mode are ordinary one-shot browser auditions and
     // must never leave Max's repeating clock armed.
     const next = scrubSync ? !!active : false;
     if (next === scrubActive) return;
@@ -184,7 +179,7 @@ function applySyncMessage(message) {
             setMode(message.mode, true);
         }
 
-        setScrubSync(!!message.scrub_sync, true);
+        setScrubMode(message.scrub_mode || (message.scrub_sync ? '16n' : 'one-shot'), true);
         setScrubActive(!!message.scrub_active, true);
 
         if (
@@ -228,6 +223,11 @@ function applySyncMessage(message) {
             setMode(message.mode, true);
         }
 
+        return;
+    }
+
+    if (message.type === 'scrub_mode') {
+        setScrubMode(message.mode, true);
         return;
     }
 
@@ -293,8 +293,10 @@ function connectSync() {
             // Only an actual jweb~/MaxBridge page is allowed to announce Live.
             // Check window.max on every tick as well, in case MaxBridge becomes
             // available a moment after the page/websocket itself opens.
+            let maxTimingReady = false;
             const heartbeat = () => {
                 if (window.max) {
+                    if (!maxTimingReady) { setScrubMode(scrubMode, true); maxTimingReady = true; }
                     syncSend({
                         type: 'live_heartbeat',
                     });
@@ -709,7 +711,7 @@ async function play(
         src.buffer =
             b;
 
-        // Normal 90/150/250 ms scrub modes are one-shots:
+        // Normal 90 ms scrub selections are one-shots:
         // each selection starts exactly one AudioBufferSourceNode
         // and never loops it.
         src.loop =
@@ -968,7 +970,7 @@ async function select(
     ) {
         $('audioStatus').textContent =
             quantizedScrub
-                ? '1/16 sync · auditioning through Ableton'
+                ? `${scrubMode} sync · auditioning through Ableton`
                 : 'Live connected · auditioning through Ableton';
 
     } else if (
@@ -977,7 +979,7 @@ async function select(
         liveView
     ) {
         $('audioStatus').textContent =
-            '1/16 sync · Live clock';
+            `${scrubMode} sync · Live clock`;
     }
 
     if (!s.coords[mode]) {
@@ -2009,6 +2011,8 @@ function applyPoolState(next) {
             '';
     }
 
+    renderLivePools(next);
+
     $('poolSummary').textContent =
         `${next.active_pool_ids.length} active · ` +
         `${next.sample_ids.length} samples`;
@@ -2175,10 +2179,7 @@ function applyPoolState(next) {
     }
 
     if (poolBusy) {
-        $('poolManager')
-            .querySelectorAll(
-                'button,input'
-            )
+        document.querySelectorAll('#poolManager button, #poolManager input, #livePoolPicker button, #livePoolPicker input')
             .forEach(
                 (el) =>
                     el.disabled =
@@ -2245,12 +2246,9 @@ async function poolAction(action) {
         true;
 
     $('poolProgress').textContent =
-        'Working… Analysis may take a few minutes.';
+        'Working…';
 
-    $('poolManager')
-        .querySelectorAll(
-            'button,input'
-        )
+    document.querySelectorAll('#poolManager button, #poolManager input, #livePoolPicker button, #livePoolPicker input')
         .forEach(
             (el) =>
                 el.disabled =
@@ -2266,15 +2264,13 @@ async function poolAction(action) {
     } catch (e) {
         $('poolProgress').textContent =
             e.message;
+        error(e);
 
     } finally {
         poolBusy =
             false;
 
-        $('poolManager')
-            .querySelectorAll(
-                'button,input'
-            )
+        document.querySelectorAll('#poolManager button, #poolManager input, #livePoolPicker button, #livePoolPicker input')
             .forEach(
                 (el) =>
                     el.disabled =
@@ -2282,6 +2278,38 @@ async function poolAction(action) {
             );
     }
 }
+
+function renderLivePools(next) {
+    const all = next.pools.length > 0 && next.active_pool_ids.length === next.pools.length;
+    $('livePoolSummary').textContent = all ? 'All pools ▾' : `Pools (${next.active_pool_ids.length}) ▾`;
+    $('livePoolList').replaceChildren();
+    if (!next.pools.length) $('livePoolList').textContent = 'Create pools in Open Browser.';
+    for (const pool of next.pools) {
+        const label = document.createElement('label');
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = next.active_pool_ids.includes(pool.id);
+        box.onchange = () => poolAction(async () => {
+            const ids = new Set(poolState.active_pool_ids);
+            if (box.checked) ids.add(pool.id); else ids.delete(pool.id);
+            applyPoolState(await poolRequest('/api/pools/active','PUT',{ids:[...ids]}));
+        });
+        label.append(box,document.createTextNode(` ${pool.name} (${pool.count})`));
+        $('livePoolList').append(label);
+    }
+}
+function selectAllPools() {
+    return poolAction(async () => applyPoolState(await poolRequest('/api/pools/active/all','PUT')));
+}
+$('allPools').onclick = selectAllPools;
+$('liveAllPools').onclick = selectAllPools;
+$('liveNoPools').onclick = () => poolAction(async () => applyPoolState(await poolRequest('/api/pools/active','PUT',{ids:[]})));
+document.addEventListener('pointerdown', event => {
+    if (!$('livePoolPicker').contains(event.target)) $('livePoolPicker').open = false;
+});
+document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') $('livePoolPicker').open = false;
+});
 
 $('embedSelection').onclick =
     () =>
@@ -2387,12 +2415,7 @@ $('reset').onclick =
         draw();
     };
 
-$('sync16').onclick =
-    () => {
-        setScrubSync(
-            !scrubSync
-        );
-    };
+$('scrubMode').onchange = () => setScrubMode($('scrubMode').value);
 
 $('openBrowser').onclick =
     () => {

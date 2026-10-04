@@ -6,7 +6,7 @@
 		<title>Drum Atlas</title>
 		<script>if (/[?&]view=live(?:&|$)/.test(location.search)) document.documentElement.classList.add('live-view');</script>
         <style>html.live-view #poolManager { display: none !important; }</style>
-        <link rel="stylesheet" href="/static/style.css?v=live-layout-3">
+        <link rel="stylesheet" href="/static/style.css?v=controls-4">
 	</head>
 	<body>
 		<header>
@@ -22,6 +22,7 @@
                 <details id="poolManager" class="pool-manager">
                     <summary>Sample pools · <span id="poolSummary">Loading…</span></summary>
                     <div id="poolList"></div>
+                    <button id="allPools">Select all pools</button>
                     <button id="newPool">+ New Pool</button>
                     <button id="embedSelection" title="Rebuild both 2D maps for the checked pools using saved features">Embed selection</button>
                     <button id="globalEmbed" title="Return to the global map, keeping the current pool filters">Global embed</button>
@@ -44,7 +45,19 @@
 					</div>
 					<label class="search">Find a sample<input id="search" placeholder="Search filenames or paths…"></label>
 					<button id="reset">Reset</button>
-					<button id="sync16" class="sync-toggle" aria-pressed="false" title="Quantize drag-scrubbing to Live's 16th-note grid">1/16 Sync</button>
+					<select id="scrubMode" aria-label="Audition timing" title="Synced timing uses the Live transport">
+                        <option value="one-shot">1-shot</option>
+                        <option value="16n">16ths</option>
+                        <option value="8n">8ths</option>
+                        <option value="4n">4ths</option>
+                    </select>
+                    <details id="livePoolPicker" class="live-only">
+                        <summary id="livePoolSummary">Pools ▾</summary>
+                        <div class="live-pool-menu">
+                            <div class="live-pool-actions"><button id="liveAllPools">All pools</button><button id="liveNoPools">None</button></div>
+                            <div id="livePoolList"></div>
+                        </div>
+                    </details>
 					<button id="openBrowser" class="live-only" title="Open the full Drum Atlas interface in your default browser">Open Browser ↗</button>
 				</div>
 				<div class="map-wrap">
@@ -61,7 +74,6 @@
 					<button id="play">▶ Replay</button>
 					<button id="stop">■ Stop</button>
 					<label>Volume <input id="volume" type="range" min="0" max="1" step=".01" value=".55"></label>
-					<label>Scrub interval <select id="debounce"><option value="90" selected>90 ms</option><option value="150">150 ms</option><option value="250">250 ms</option></select></label>
 					<span id="audioStatus">Ready to audition</span>
 				</div>
 				<div class="bottom">
@@ -89,6 +101,6 @@
 			</aside>
 		</main>
 		<div id="error" role="alert" hidden></div>
-		<script src="/static/app.js?v=hotpath-3"></script>
+		<script src="/static/app.js?v=controls-4"></script>
 	</body>
 </html>

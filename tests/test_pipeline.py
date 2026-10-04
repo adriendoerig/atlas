@@ -6,6 +6,7 @@ from drum_atlas.demo import generate
 from drum_atlas.analysis import analyze
 from drum_atlas.index import scan,neighbors
 from drum_atlas.store import connect
+from drum_atlas import pools
 from drum_atlas.server import create_app
 
 def quiet(*args,**kwargs):pass
@@ -31,11 +32,15 @@ def test_cache_changes_missing_corrupt_and_api(tmp_path):
     assert third['analyzed']==1
     db=connect(dbpath)
     assert db.execute('SELECT active FROM samples WHERE path=?',(str(root/'hat_0.wav'),)).fetchone()[0]==0
+    pid=pools.create(db,'Test library','manual')
+    db.execute('INSERT INTO pool_samples SELECT ?,id FROM samples WHERE active=1',(pid,));db.commit()
+    pools.select(db,[pid])
     client=TestClient(create_app(dbpath))
     library=client.get('/api/library').json()
     accepted=[s for s in library['samples'] if s['coords']]
     sid=accepted[0]['id']
-    ns=client.get(f'/api/neighbors/{sid}?space=timbral').json()
+    assert client.get(f'/api/neighbors/{sid}?space=timbral').json()==[]  # User's opt-in fast path.
+    ns=client.get(f'/api/neighbors/{sid}?space=timbral&explicit=true').json()
     assert sid not in [n['id'] for n in ns]
     before=neighbors(db,'timbral',sid)
     db.execute('UPDATE points SET x=999,y=-999');db.commit()
@@ -43,8 +48,8 @@ def test_cache_changes_missing_corrupt_and_api(tmp_path):
     audio=client.get(f'/api/audio/{sid}')
     assert audio.status_code==200 and audio.content[:4]==b'RIFF'
     assert client.get('/api/audio/99999').status_code==404
-    assert client.get('/api/neighbors/99999?space=timbral').status_code==404
-    assert client.get('/api/neighbors/1?space=unknown').status_code==400
+    assert client.get('/api/neighbors/99999?space=timbral&explicit=true').status_code==404
+    assert client.get('/api/neighbors/1?space=unknown&explicit=true').status_code==400
     assert client.get('/').status_code==200
     db.close()
 

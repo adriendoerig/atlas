@@ -175,3 +175,16 @@ The project folder contains:
 After this UI update, reload the Max web page once. The compact Live view hides
 pool management before rendering, fixes toolbar/map grid placement, and refreshes
 its library automatically when the server connection is re-established.
+
+## Timing and compact pool controls
+
+The toolbar's **Audition timing** menu replaces the 1/16 toggle and separate
+scrub-delay menu: **1-shot** uses the existing 90 ms one-shot behavior;
+**16ths / 8ths / 4ths** use Live's clock. See `MAX-SYNC.md` for the new
+`scrubdivision` message and the small Max patch change.
+Timing stays synchronized between browser and Live.
+
+**Select all pools** selects the union of every current pool. In the compact Live
+view, open **Pools ▾** to check any combination, **All pools**, or **None**. Pool
+creation/rescanning stays in the full browser. To install on another Mac, see
+`INSTALL-ON-ANOTHER-MAC.md` and double-click `Setup.command`.

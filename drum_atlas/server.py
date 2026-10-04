@@ -95,6 +95,7 @@ def create_app(db_path=None):
         'selected': None,
         'mode': None,
         'scrub_sync': False,
+        'scrub_mode': 'one-shot',
         'scrub_active': False,
     }
 
@@ -161,6 +162,7 @@ def create_app(db_path=None):
             'selected': sync_state['selected'],
             'mode': sync_state['mode'],
             'scrub_sync': sync_state['scrub_sync'],
+            'scrub_mode': sync_state['scrub_mode'],
             'scrub_active': sync_state['scrub_active'],
         })
         await send_presence()
@@ -216,16 +218,27 @@ def create_app(db_path=None):
                         'id': sample_id,
                     }, exclude=websocket)
 
+                elif kind == 'scrub_mode':
+                    next_mode = message.get('mode')
+                    if next_mode not in ('one-shot','16n','8n','4n'):
+                        continue
+                    sync_state['scrub_mode'] = next_mode
+                    sync_state['scrub_sync'] = next_mode != 'one-shot'
+                    sync_state['scrub_active'] = False
+                    await relay({'type':'scrub_mode','mode':next_mode}, exclude=websocket)
+
                 elif kind == 'scrub_sync':
                     enabled = bool(message.get('enabled', False))
                     sync_state['scrub_sync'] = enabled
+                    sync_state['scrub_mode'] = (sync_state['scrub_mode'] if sync_state['scrub_mode'] != 'one-shot' else '16n') if enabled else 'one-shot'
+                    if not enabled: sync_state['scrub_active'] = False
                     await relay({
                         'type': 'scrub_sync',
                         'enabled': enabled,
                     }, exclude=websocket)
 
                 elif kind == 'scrub':
-                    active = bool(message.get('active', False))
+                    active = bool(message.get('active', False)) and sync_state['scrub_sync']
                     sync_state['scrub_active'] = active
                     await relay({
                         'type': 'scrub',
@@ -279,6 +292,14 @@ def create_app(db_path=None):
     @app.get('/api/pools')
     def get_pools():
         return pool_state()
+
+    @app.put('/api/pools/active/all')
+    async def select_all_pools():
+        async with mutation_lock:
+            db = connect(db_path)
+            try: pools.select(db, [r[0] for r in db.execute('SELECT id FROM pools')])
+            finally: db.close()
+            return await notify_pools()
 
     @app.put('/api/pools/active')
     async def set_pools(body: PoolSelection):

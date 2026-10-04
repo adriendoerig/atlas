@@ -145,3 +145,15 @@ html.live-view #poolManager {display:none !important;}
 body.live-view .toolbar {grid-row:1;position:relative;z-index:3;flex-shrink:0;}
 body.live-view .map-wrap {grid-row:2;min-width:0;}
 
+
+/* Compact pool selection is a dropdown overlay, never an extra grid row. */
+body.live-view .workspace {position:relative;}
+body.live-view .toolbar {overflow:visible;}
+body.live-view #livePoolPicker {display:block;min-width:0;}
+#livePoolPicker summary {cursor:pointer;list-style:none;border:1px solid #35414a;background:#1a222a;border-radius:4px;padding:4px 7px;font-size:10px;white-space:nowrap;}
+.live-pool-menu {position:absolute;top:32px;right:4px;width:min(290px,calc(100vw - 16px));max-height:calc(100vh - 46px);overflow:auto;background:#152128;border:1px solid #53636b;border-radius:6px;padding:8px;box-shadow:0 6px 20px #0009;z-index:10;}
+.live-pool-actions {display:flex;gap:6px;margin-bottom:7px;}
+#livePoolList label {display:flex;align-items:center;gap:5px;padding:6px 2px;overflow-wrap:anywhere;}
+body.live-view #scrubMode {max-width:78px;}
+body.live-view #openBrowser {flex-shrink:0;}
+@media(max-width:420px) {body.live-view .toolbar {gap:2px;} body.live-view button,body.live-view select,body.live-view #livePoolPicker summary {padding:4px;font-size:9px;}}

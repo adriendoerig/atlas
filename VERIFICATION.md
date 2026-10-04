@@ -54,3 +54,22 @@ small selections, empty selections, invalidation, and unchanged global points.
 The final server successfully built the real Polaroit subset with UMAP; a compact
 Live-view tab showed SELECTION and synchronized back to global on button press.
 Both original pool checkboxes and global mode were restored after verification.
+
+Timing/pool/portability update: preserved the user's committed performance changes
+in 5f06094. All 15 tests pass, including the new timing relay/reconnect/one-shot
+gate and select-all union tests. The old neighbor test was updated to explicitly
+request the user's opt-in neighbor path and to use an active pool; ordinary
+requests are still asserted to return no neighbors. JavaScript and setup-shell
+syntax checks pass. The package builds and installs locally.
+
+Browser checks: 1-shot, 16ths, 8ths, and 4ths rendered; 8ths propagated from browser
+to the compact view and 4ths/16ths propagated back. The live dropdown rendered at
+640 x 240, with a scrollable nine-pool checklist. All pools selected 22,292 samples
+in both views. The prior three-pool selection (605 samples) and one-shot timing
+were restored after testing. The live clock itself still requires the documented
+scrubdivision Max wiring and has not been listening-tested for 8ths/4ths.
+
+Setup.command creates a fresh Python 3.12 environment and installs the project.
+A code-only Mac ZIP excludes audio, user database, venv, and model weights. Archive
+contents and executable flags are verified. Installation on another physical Mac
+has not been tested; tested target remains Apple Silicon macOS/Python 3.12.
