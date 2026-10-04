@@ -2,7 +2,7 @@ import asyncio
 import sqlite3
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
-from . import pools
+from . import pools, projections
 from .paths import database_path
 import io
 import json
@@ -176,6 +176,7 @@ def create_app(db_path=None):
             await send_presence()
 
     async def notify_pools(library_changed=False):
+        library_changed = True  # Pool changes can invalidate a subset layout.
         result = pool_state()
         if sync_state['selected'] is not None and sync_state['selected'] not in result['sample_ids']:
             sync_state['selected'] = None
@@ -183,6 +184,23 @@ def create_app(db_path=None):
             await relay({'type':'scrub', 'active':False})
         await relay({'type':'pools', 'pool_state':result, 'library_changed':library_changed})
         return result
+
+    @app.post('/api/projection/selection')
+    async def embed_selection():
+        async with mutation_lock:
+            try: result = await run_in_threadpool(projections.embed_selection, db_path)
+            except ValueError as e: raise HTTPException(400, str(e))
+            await notify_pools(True)
+            return result
+
+    @app.post('/api/projection/global')
+    async def global_projection():
+        async with mutation_lock:
+            db = connect(db_path)
+            try: projections.activate_global(db)
+            finally: db.close()
+            await notify_pools(True)
+            return {'scope':'global','key':'global'}
 
     @app.get('/api/pools')
     def get_pools():
@@ -273,6 +291,13 @@ def create_app(db_path=None):
                 }
                 for name in spaces
             }
+            projection = projections.current(db)
+            if projection['scope'] == 'selection':
+                points = {name:{int(sid):xy for sid,xy in layout.items()}
+                          for name,layout in projection['layouts'].items()}
+                for name,detail in spaces.items():
+                    count = len(points.get(name,{}))
+                    detail['projection'] = 'UMAP' if count >= 4 else 'small-set layout'
             samples = []
             for r in db.execute('SELECT * FROM samples WHERE active=1 ORDER BY path'):
                 samples.append(
@@ -291,7 +316,7 @@ def create_app(db_path=None):
                         },
                     }
                 )
-            return {'spaces': spaces, 'samples': samples, 'pool_state': pools.state(db)}
+            return {'spaces': spaces, 'samples': samples, 'pool_state': pools.state(db), 'projection': {k:projection[k] for k in ('scope','key')}}
         finally:
             db.close()
 

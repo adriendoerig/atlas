@@ -63,3 +63,15 @@ A removed selection clears the shared selection and stops the scrub gesture.
 Long scans run off the asynchronous event loop, allowing existing audition and
 WebSocket traffic to continue. Web mutations are serialized. There is no durable
 job queue or cross-process scanner lock: run one scanner per database.
+
+## Cached selection projections
+
+`projections(key, layouts)` stores only alternate coordinates for both spaces.
+The cache key includes an algorithm version, active pool IDs, distinct active
+sample IDs, and global space signatures. `settings.projection` selects a cache
+key or `global`; mismatched keys safely fall back to global. The cache retains
+20 recent layouts. Layouts use the existing normalized full vectors, preserving
+global neighbor-distance semantics. Global tables are never modified by these
+operations. POST `/api/projection/selection` builds/recalls the active union;
+POST `/api/projection/global` restores global. Mutations use the existing lock
+and broadcast library refreshes to browser and Live clients.

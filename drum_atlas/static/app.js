@@ -1528,7 +1528,7 @@ function setMode(
         data.spaces[mode];
 
     $('mapInfo').textContent =
-        `${mode.toUpperCase()} / ` +
+        `${mode.toUpperCase()} / ${data.projection?.scope === 'selection' ? 'SELECTION / ' : ''}` +
         `${detail?.projection || 'No map'} / ` +
         `${detail?.dimensions || 0}D → 2D`;
 
@@ -1559,10 +1559,13 @@ async function load() {
 
         buffers.clear();
 
+        const previousProjection = data.projection?.key;
         data =
             await get(
                 '/api/library'
             );
+
+        if (previousProjection !== data.projection?.key) { zoom = 1; pan = [0, 0]; }
 
         byId =
             new Map(
@@ -1620,6 +1623,9 @@ async function load() {
             true
         );
 
+        $('projectionStatus').textContent = data.projection?.scope === 'selection' ? 'Selection map' : 'Global map';
+        $('embedSelection').classList.toggle('active', data.projection?.scope === 'selection');
+        $('globalEmbed').classList.toggle('active', data.projection?.scope !== 'selection');
         applyPoolState(data.pool_state);
 
         libraryReady =
@@ -1713,6 +1719,14 @@ async function poolAction(action) {
         $('poolManager').querySelectorAll('button,input').forEach(el => el.disabled = false);
     }
 }
+$('embedSelection').onclick = () => poolAction(async () => {
+    await poolRequest('/api/projection/selection','POST');
+    await load();
+});
+$('globalEmbed').onclick = () => poolAction(async () => {
+    await poolRequest('/api/projection/global','POST');
+    await load();
+});
 $('newPool').onclick = () => { $('poolForm').hidden = false; $('poolName').focus(); };
 $('cancelPool').onclick = () => { $('poolForm').hidden = true; };
 $('poolForm').onsubmit = event => {

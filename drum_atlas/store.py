@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS pool_roots (
  pool_id INTEGER NOT NULL REFERENCES pools(id) ON DELETE CASCADE,
  path TEXT NOT NULL, PRIMARY KEY(pool_id,path));
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY,value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS projections (key TEXT PRIMARY KEY, layouts TEXT NOT NULL);
 '''
 
 def migrate_pools(db):

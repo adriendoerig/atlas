@@ -144,3 +144,18 @@ drum-atlas --db data/demo.sqlite serve
 ```
 
 The generated library includes kicks, snares, hats, a loop, a sustained tone, and silence. Tests verify screening, persistent cache reuse/invalidation, missing/corrupt files, local preview decoding, and nearest-neighbor independence from map coordinates. The comparison report records what was actually tested against PML.
+
+## Zoom into a pool combination
+
+Check the pools you want, then press **Embed selection**. This builds both CLAP
+and Timbral 2D layouts using only mapped samples in that pool union. It reuses
+their existing full-dimensional vectors: no audio analysis or CLAP inference is
+repeated. Filename search is still a display filter, not an embedding input.
+
+**Global embed** restores the original global layout while keeping the pool
+checkboxes. The map label indicates SELECTION when a subset layout is active.
+Both views synchronize, including the compact Live view. Changing the pool
+combination or library invalidates an incompatible active layout and displays
+the global map. Up to 20 layouts are cached persistently; unchanged combinations
+can be recalled without recomputing. Global coordinates and nearest-neighbor
+metrics are untouched. Very small selections use a simple row layout.

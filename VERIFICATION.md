@@ -47,3 +47,10 @@ outlet messages were retained.
 
 One existing Starlette/httpx deprecation warning remains in the test runner;
 there are no failed tests.
+
+Selection-map update: all 11 tests passed at the end of implementation. The new
+coverage checks distinct-union layouts, original-vector inputs, cache reuse,
+small selections, empty selections, invalidation, and unchanged global points.
+The final server successfully built the real Polaroit subset with UMAP; a compact
+Live-view tab showed SELECTION and synchronized back to global on button press.
+Both original pool checkboxes and global mode were restored after verification.
